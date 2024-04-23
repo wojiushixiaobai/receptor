@@ -1,0 +1,85 @@
+on:
+
+    push:
+      branches:
+        - main
+    schedule:
+      - cron: '0 1 * * *'
+  
+name: Stable Release Version
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+    
+      - name: Check version
+        run: |
+            version=$(curl -s https://api.github.com/repos/ansible/receptor/releases/latest | jq -r '.tag_name')
+            echo "Latest version is $version"
+            echo "version=$version" >> $GITHUB_ENV
+
+      - name: Create tag
+        run: |
+          git config --global user.name "${GITHUB_ACTOR}"
+          git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git tag -a ${{ env.version }} -m "Release ${{ env.version }}"
+          git push origin ${{ env.version }} || echo "Tag already exists"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release
+        run: |
+          gh release create ${{ env.version }} --notes "**Full Changelog**: [${{ env.version }}](https://github.com/ansible/receptor/releases/tag/${{ env.version }})" || echo "Release already exists"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Check version
+        run: |
+            version=$(curl -s https://api.github.com/repos/ansible/receptor/releases/latest | jq -r '.tag_name')
+            echo "Latest version is $version"
+            echo "version=$version" >> $GITHUB_ENV
+
+      - name: Check build
+        run: |
+          gh release view ${{ env.version }} -R ${{ github.repository }} | grep checksums.txt || echo "build=need" >> $GITHUB_ENV
+          echo "check build: ${build:-no}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout Receptor
+        if: ${{ env.build == 'need' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ansible/receptor
+          ref: ${{ env.version }}
+    
+      - name: Set up Go
+        if: ${{ env.build == 'need' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.20"
+
+      - name: Build packages
+        if: ${{ env.build == 'need' }}
+        run: |
+          make build-package GOOS=linux GOARCH=amd64 BINNAME=receptor
+          make build-package GOOS=linux GOARCH=arm64 BINNAME=receptor
+          make build-package GOOS=linux GOARCH=ppc64le BINNAME=receptor
+          make build-package GOOS=linux GOARCH=s390x BINNAME=receptor
+          make build-package GOOS=linux GOARCH=mips64le BINNAME=receptor
+      
+      - name: Upload packages
+        if: ${{ env.build == 'need' }}
+        run: |
+          gh release upload ${{ env.version }} dist/*.tar.gz -R ${{ github.repository }}
+          gh release upload ${{ env.version }} dist/checksums.txt -R ${{ github.repository }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
